@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Tableau Server Migration Tool
 
@@ -14,6 +13,7 @@ import logging
 import tempfile
 import tableauserverclient as TSC
 from pathlib import Path
+import time
 
 
 class TableauMigrator:
@@ -229,21 +229,74 @@ class TableauMigrator:
         # Download the workbook
         workbook_file = os.path.join(self.temp_dir, f"workbook_{workbook_id}.twbx")
         self.logger.info(f"Downloading workbook {workbook_id} to {workbook_file}")
-        self.source_server.workbooks.download(workbook_id, workbook_file)
         
-        # Get workbook details for name and other metadata
-        workbook = self.source_server.workbooks.get_by_id(workbook_id)
-        
-        # Create a new workbook item with the target project id
-        new_workbook = TSC.WorkbookItem(project_id=target_project_id, name=workbook.name)
-        
-        # Upload to target
-        self.logger.info(f"Uploading workbook {workbook.name} to target project {target_project_id}")
-        self.target_server.workbooks.publish(new_workbook, workbook_file, 'Overwrite')
-        
-        # Clean up the temp file
-        os.remove(workbook_file)
-        self.logger.info(f"Successfully migrated workbook {workbook.name}")
+        try:
+            self.source_server.workbooks.download(workbook_id, workbook_file)
+            
+            # Verify file was downloaded and exists
+            if not os.path.exists(workbook_file):
+                self.logger.error(f"Download failed: File {workbook_file} does not exist")
+                raise FileNotFoundError(f"Failed to download workbook to {workbook_file}")
+                
+            file_size = os.path.getsize(workbook_file)
+            self.logger.info(f"Downloaded workbook file size: {file_size} bytes")
+            
+            if file_size == 0:
+                self.logger.error("Downloaded file is empty")
+                raise ValueError("Downloaded workbook file is empty")
+            
+            # Small delay to ensure file is fully flushed to disk
+            time.sleep(1)
+            
+            # Get workbook details for name and other metadata
+            workbook = self.source_server.workbooks.get_by_id(workbook_id)
+            
+            # Create a new workbook item with the target project id
+            new_workbook = TSC.WorkbookItem(project_id=target_project_id, name=workbook.name)
+            
+            # Upload to target
+            self.logger.info(f"Uploading workbook {workbook.name} to target project {target_project_id}")
+            
+            try:
+                # Try with CreateNew instead of Overwrite if there are issues
+                publish_mode = TSC.Server.PublishMode.Overwrite
+                
+                # Make sure the file is accessible and readable
+                with open(workbook_file, 'rb') as file_check:
+                    file_check.read(1024)  # Read a small chunk to verify file is accessible
+                    self.logger.info("File is readable")
+                
+                self.logger.info(f"Publishing with mode: {publish_mode}")
+                self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                self.logger.info(f"Successfully migrated workbook {workbook.name}")
+            except Exception as upload_error:
+                self.logger.error(f"Error publishing workbook: {str(upload_error)}")
+                self.logger.error(f"Workbook file exists: {os.path.exists(workbook_file)}")
+                self.logger.error(f"Workbook file size: {os.path.getsize(workbook_file) if os.path.exists(workbook_file) else 'N/A'}")
+                self.logger.error(f"Target project exists: {target_project_id}")
+                
+                # Try with different publish mode
+                try:
+                    self.logger.info("Trying alternative publish mode...")
+                    publish_mode = TSC.Server.PublishMode.CreateNew
+                    self.logger.info(f"Publishing with mode: {publish_mode}")
+                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                    self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
+                except Exception as retry_error:
+                    self.logger.error(f"Alternative publish mode also failed: {str(retry_error)}")
+                    raise
+                
+        except Exception as e:
+            self.logger.error(f"Error in migrate_workbook: {str(e)}")
+            raise
+        finally:
+            # Clean up the temp file
+            if os.path.exists(workbook_file):
+                try:
+                    os.remove(workbook_file)
+                    self.logger.info(f"Removed temporary file: {workbook_file}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Failed to remove temporary file: {str(cleanup_error)}")
     
     def migrate_project(self, source_project_id, target_project_id=None):
         """Migrate all workbooks from a source project to a target project
@@ -337,18 +390,27 @@ class TableauMigrator:
         """Clean up temporary files and sign out of servers"""
         # Clean up temp directory
         import shutil
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
-            self.logger.info(f"Removed temporary directory: {self.temp_dir}")
+        try:
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+                self.logger.info(f"Removed temporary directory: {self.temp_dir}")
+        except Exception as e:
+            self.logger.warning(f"Error cleaning up temporary directory: {str(e)}")
         
         # Sign out of servers
-        if self.source_server:
-            self.source_server.auth.sign_out()
-            self.logger.info("Signed out of source server")
+        try:
+            if self.source_server:
+                self.source_server.auth.sign_out()
+                self.logger.info("Signed out of source server")
+        except Exception as e:
+            self.logger.warning(f"Error signing out of source server: {str(e)}")
         
-        if self.target_server:
-            self.target_server.auth.sign_out()
-            self.logger.info("Signed out of target server")
+        try:
+            if self.target_server:
+                self.target_server.auth.sign_out()
+                self.logger.info("Signed out of target server")
+        except Exception as e:
+            self.logger.warning(f"Error signing out of target server: {str(e)}")
 
     def list_workbooks_by_project_name(self, server, project_name, site=None):
         """List all workbooks in a project identified by name"""
