@@ -161,17 +161,25 @@ class TableauMigrator:
             self.logger.info(f"Switching from site {current_site} to {site}")
             server.auth.switch_site(site)
         
-        # If project_id is provided, filter by project
-        req_option = TSC.RequestOptions()
-        if project_id:
-            req_option.filter.add(TSC.Filter(TSC.RequestOptions.Field.ProjectId, 
-                                            TSC.RequestOptions.Operator.Equals, 
-                                            project_id))
-        
-        all_workbooks = list(TSC.Pager(server.workbooks, req_option))
-        self.logger.info(f"Found {len(all_workbooks)} workbooks on site {server.site_id}" + 
-                        (f" in project {project_id}" if project_id else ""))
-        return all_workbooks
+        try:
+            # Get all workbooks without any options that could trigger API compatibility issues
+            all_workbooks = []
+            for wb in TSC.Pager(server.workbooks):
+                all_workbooks.append(wb)
+            
+            self.logger.info(f"Retrieved {len(all_workbooks)} total workbooks from site {server.site_id}")
+            
+            # Filter locally by project_id if needed
+            if project_id:
+                filtered_workbooks = [wb for wb in all_workbooks if wb.project_id == project_id]
+                self.logger.info(f"Filtered to {len(filtered_workbooks)} workbooks in project {project_id}")
+                return filtered_workbooks
+            else:
+                return all_workbooks
+                
+        except Exception as e:
+            self.logger.error(f"Error listing workbooks: {str(e)}")
+            return []
     
     def ensure_project_exists(self, project_name, parent_id=None):
         """Make sure a project exists on the target server, create if it doesn't"""
