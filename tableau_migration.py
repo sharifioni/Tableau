@@ -171,7 +171,16 @@ class TableauMigrator:
             
             # Filter locally by project_id if needed
             if project_id:
-                filtered_workbooks = [wb for wb in all_workbooks if wb.project_id == project_id]
+                # Debug info: Log all project IDs to help troubleshoot
+                if self.logger.level <= logging.DEBUG:
+                    project_ids = set(wb.project_id for wb in all_workbooks)
+                    self.logger.debug(f"Available project IDs in workbooks: {project_ids}")
+                    self.logger.debug(f"Looking for project ID: {project_id}")
+                
+                # More flexible comparison - convert both to strings for comparison
+                filtered_workbooks = [wb for wb in all_workbooks 
+                                     if str(wb.project_id).lower() == str(project_id).lower()]
+                
                 self.logger.info(f"Filtered to {len(filtered_workbooks)} workbooks in project {project_id}")
                 return filtered_workbooks
             else:
@@ -341,6 +350,40 @@ class TableauMigrator:
             self.target_server.auth.sign_out()
             self.logger.info("Signed out of target server")
 
+    def list_workbooks_by_project_name(self, server, project_name, site=None):
+        """List all workbooks in a project identified by name"""
+        if site and server.site_id != site:
+            # Switch to the specified site if needed
+            current_site = server.site_id
+            self.logger.info(f"Switching from site {current_site} to {site}")
+            server.auth.switch_site(site)
+        
+        # First, get all projects to find the one with the matching name
+        try:
+            all_projects = list(TSC.Pager(server.projects))
+            self.logger.info(f"Found {len(all_projects)} projects on site {server.site_id}")
+            
+            # Find projects with matching name (case insensitive)
+            matching_projects = [p for p in all_projects 
+                               if p.name.lower() == project_name.lower()]
+            
+            if not matching_projects:
+                self.logger.error(f"No project found with name: {project_name}")
+                return []
+            
+            if len(matching_projects) > 1:
+                self.logger.warning(f"Multiple projects found with name: {project_name}. Using the first one.")
+            
+            target_project = matching_projects[0]
+            self.logger.info(f"Found project '{target_project.name}' with ID: {target_project.id}")
+            
+            # Now get workbooks for this project
+            return self.list_workbooks(server, site, target_project.id)
+            
+        except Exception as e:
+            self.logger.error(f"Error listing workbooks by project name: {str(e)}")
+            return []
+
 
 def main():
     parser = argparse.ArgumentParser(description="Migrate workbooks between Tableau servers")
@@ -401,7 +444,9 @@ def main():
     
     # Additional options
     parser.add_argument("--source-project-id", "-spid",
-                      help="Source project ID (required for --list-workbooks)")
+                      help="Source project ID (for --list-workbooks or --migrate-workbook)")
+    parser.add_argument("--source-project-name", "-spname",
+                      help="Source project name (alternative to --source-project-id)")
     parser.add_argument("--target-project-id", "-tpid",
                       help="Target project ID (optional for --migrate-workbook and --migrate-project)")
     parser.add_argument("--verbosity", "-v", choices=["debug", "info", "warning", "error"],
@@ -463,11 +508,21 @@ def main():
         
         elif args.list_workbooks:
             migrator.connect_to_source()
-            workbooks = migrator.list_workbooks(migrator.source_server, 
-                                               project_id=args.source_project_id)
+            
+            # Get workbooks - either by project ID, project name, or all
+            if args.source_project_id:
+                workbooks = migrator.list_workbooks(migrator.source_server, 
+                                                  project_id=args.source_project_id)
+            elif args.source_project_name:
+                workbooks = migrator.list_workbooks_by_project_name(migrator.source_server,
+                                                                   args.source_project_name)
+            else:
+                workbooks = migrator.list_workbooks(migrator.source_server)
+            
             print("\nAvailable workbooks:")
             for workbook in workbooks:
-                print(f"  - {workbook.name} (ID: {workbook.id})")
+                # Print project ID to help with troubleshooting
+                print(f"  - {workbook.name} (ID: {workbook.id}, Project ID: {workbook.project_id})")
         
         elif args.migrate_workbook:
             if not args.source_project_id:
