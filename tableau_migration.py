@@ -225,78 +225,103 @@ class TableauMigrator:
             self.connect_to_source()
         if not self.target_server:
             self.connect_to_target()
-            
-        # Download the workbook
-        workbook_file = os.path.join(self.temp_dir, f"workbook_{workbook_id}.twbx")
-        self.logger.info(f"Downloading workbook {workbook_id} to {workbook_file}")
         
+        # First verify the workbook exists
         try:
-            self.source_server.workbooks.download(workbook_id, workbook_file)
-            
-            # Verify file was downloaded and exists
-            if not os.path.exists(workbook_file):
-                self.logger.error(f"Download failed: File {workbook_file} does not exist")
-                raise FileNotFoundError(f"Failed to download workbook to {workbook_file}")
+            # Check if workbook exists before attempting download
+            self.logger.info(f"Verifying workbook exists with ID: {workbook_id}")
+            try:
+                workbook = self.source_server.workbooks.get_by_id(workbook_id)
+                self.logger.info(f"Found workbook: {workbook.name} (ID: {workbook_id})")
+            except Exception as wb_err:
+                self.logger.error(f"Error finding workbook with ID {workbook_id}: {str(wb_err)}")
                 
-            file_size = os.path.getsize(workbook_file)
-            self.logger.info(f"Downloaded workbook file size: {file_size} bytes")
+                # Try to list workbooks in the project to suggest valid IDs
+                try:
+                    project_workbooks = self.list_workbooks(self.source_server, project_id=source_project)
+                    if project_workbooks:
+                        self.logger.info("Available workbooks in this project:")
+                        for wb in project_workbooks:
+                            self.logger.info(f"  - {wb.name} (ID: {wb.id})")
+                    else:
+                        self.logger.info(f"No workbooks found in project ID: {source_project}")
+                except Exception as list_err:
+                    self.logger.error(f"Error listing workbooks: {str(list_err)}")
+                
+                raise ValueError(f"Workbook with ID '{workbook_id}' not found. Please verify the ID is correct.")
             
-            if file_size == 0:
-                self.logger.error("Downloaded file is empty")
-                raise ValueError("Downloaded workbook file is empty")
-            
-            # Small delay to ensure file is fully flushed to disk
-            time.sleep(1)
-            
-            # Get workbook details for name and other metadata
-            workbook = self.source_server.workbooks.get_by_id(workbook_id)
-            
-            # Create a new workbook item with the target project id
-            new_workbook = TSC.WorkbookItem(project_id=target_project_id, name=workbook.name)
-            
-            # Upload to target
-            self.logger.info(f"Uploading workbook {workbook.name} to target project {target_project_id}")
+            # Download the workbook
+            workbook_file = os.path.join(self.temp_dir, f"workbook_{workbook_id}.twbx")
+            self.logger.info(f"Downloading workbook {workbook_id} to {workbook_file}")
             
             try:
-                # Try with CreateNew instead of Overwrite if there are issues
-                publish_mode = TSC.Server.PublishMode.Overwrite
+                self.source_server.workbooks.download(workbook_id, workbook_file)
                 
-                # Make sure the file is accessible and readable
-                with open(workbook_file, 'rb') as file_check:
-                    file_check.read(1024)  # Read a small chunk to verify file is accessible
-                    self.logger.info("File is readable")
+                # Verify file was downloaded and exists
+                if not os.path.exists(workbook_file):
+                    self.logger.error(f"Download failed: File {workbook_file} does not exist")
+                    raise FileNotFoundError(f"Failed to download workbook to {workbook_file}")
+                    
+                file_size = os.path.getsize(workbook_file)
+                self.logger.info(f"Downloaded workbook file size: {file_size} bytes")
                 
-                self.logger.info(f"Publishing with mode: {publish_mode}")
-                self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
-                self.logger.info(f"Successfully migrated workbook {workbook.name}")
-            except Exception as upload_error:
-                self.logger.error(f"Error publishing workbook: {str(upload_error)}")
-                self.logger.error(f"Workbook file exists: {os.path.exists(workbook_file)}")
-                self.logger.error(f"Workbook file size: {os.path.getsize(workbook_file) if os.path.exists(workbook_file) else 'N/A'}")
-                self.logger.error(f"Target project exists: {target_project_id}")
+                if file_size == 0:
+                    self.logger.error("Downloaded file is empty")
+                    raise ValueError("Downloaded workbook file is empty")
                 
-                # Try with different publish mode
+                # Small delay to ensure file is fully flushed to disk
+                time.sleep(1)
+                
+                # Create a new workbook item with the target project id
+                new_workbook = TSC.WorkbookItem(project_id=target_project_id, name=workbook.name)
+                
+                # Upload to target
+                self.logger.info(f"Uploading workbook {workbook.name} to target project {target_project_id}")
+                
                 try:
-                    self.logger.info("Trying alternative publish mode...")
-                    publish_mode = TSC.Server.PublishMode.CreateNew
+                    # Try with CreateNew instead of Overwrite if there are issues
+                    publish_mode = TSC.Server.PublishMode.Overwrite
+                    
+                    # Make sure the file is accessible and readable
+                    with open(workbook_file, 'rb') as file_check:
+                        file_check.read(1024)  # Read a small chunk to verify file is accessible
+                        self.logger.info("File is readable")
+                    
                     self.logger.info(f"Publishing with mode: {publish_mode}")
                     self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
-                    self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
-                except Exception as retry_error:
-                    self.logger.error(f"Alternative publish mode also failed: {str(retry_error)}")
-                    raise
-                
+                    self.logger.info(f"Successfully migrated workbook {workbook.name}")
+                except Exception as upload_error:
+                    self.logger.error(f"Error publishing workbook: {str(upload_error)}")
+                    self.logger.error(f"Workbook file exists: {os.path.exists(workbook_file)}")
+                    self.logger.error(f"Workbook file size: {os.path.getsize(workbook_file) if os.path.exists(workbook_file) else 'N/A'}")
+                    self.logger.error(f"Target project exists: {target_project_id}")
+                    
+                    # Try with different publish mode
+                    try:
+                        self.logger.info("Trying alternative publish mode...")
+                        publish_mode = TSC.Server.PublishMode.CreateNew
+                        self.logger.info(f"Publishing with mode: {publish_mode}")
+                        self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                        self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
+                    except Exception as retry_error:
+                        self.logger.error(f"Alternative publish mode also failed: {str(retry_error)}")
+                        raise
+                    
+            except Exception as e:
+                self.logger.error(f"Error in workbook download/upload process: {str(e)}")
+                raise
+            finally:
+                # Clean up the temp file
+                if os.path.exists(workbook_file):
+                    try:
+                        os.remove(workbook_file)
+                        self.logger.info(f"Removed temporary file: {workbook_file}")
+                    except Exception as cleanup_error:
+                        self.logger.warning(f"Failed to remove temporary file: {str(cleanup_error)}")
+        
         except Exception as e:
-            self.logger.error(f"Error in migrate_workbook: {str(e)}")
+            self.logger.error(f"Migration failed: {str(e)}")
             raise
-        finally:
-            # Clean up the temp file
-            if os.path.exists(workbook_file):
-                try:
-                    os.remove(workbook_file)
-                    self.logger.info(f"Removed temporary file: {workbook_file}")
-                except Exception as cleanup_error:
-                    self.logger.warning(f"Failed to remove temporary file: {str(cleanup_error)}")
     
     def migrate_project(self, source_project_id, target_project_id=None):
         """Migrate all workbooks from a source project to a target project
@@ -446,6 +471,42 @@ class TableauMigrator:
             self.logger.error(f"Error listing workbooks by project name: {str(e)}")
             return []
 
+    def find_workbook_by_name(self, server, workbook_name, project_id=None, site=None):
+        """Find a workbook by name, optionally filtered by project"""
+        if site and server.site_id != site:
+            # Switch to the specified site if needed
+            current_site = server.site_id
+            self.logger.info(f"Switching from site {current_site} to {site}")
+            server.auth.switch_site(site)
+        
+        try:
+            # Get all workbooks
+            all_workbooks = self.list_workbooks(server, project_id=project_id)
+            
+            # Find workbooks with matching name (case insensitive)
+            matching_workbooks = [wb for wb in all_workbooks 
+                                if wb.name.lower() == workbook_name.lower()]
+            
+            if not matching_workbooks:
+                self.logger.warning(f"No workbook found with name: {workbook_name}")
+                if project_id:
+                    self.logger.info(f"Available workbooks in project {project_id}:")
+                    for wb in all_workbooks:
+                        self.logger.info(f"  - {wb.name} (ID: {wb.id})")
+                return None
+            
+            if len(matching_workbooks) > 1:
+                self.logger.warning(f"Multiple workbooks found with name: {workbook_name}. Using the first one.")
+            
+            target_workbook = matching_workbooks[0]
+            self.logger.info(f"Found workbook '{target_workbook.name}' with ID: {target_workbook.id}")
+            
+            return target_workbook
+            
+        except Exception as e:
+            self.logger.error(f"Error finding workbook by name: {str(e)}")
+            return None
+
 
 def main():
     parser = argparse.ArgumentParser(description="Migrate workbooks between Tableau servers")
@@ -499,6 +560,8 @@ def main():
                            help="List available workbooks on source site")
     action_type.add_argument("--migrate-workbook", "-mw",
                            help="ID of workbook to migrate")
+    action_type.add_argument("--migrate-workbook-by-name", "-mwn",
+                           help="Name of workbook to migrate")
     action_type.add_argument("--migrate-project", "-mp",
                            help="ID of project to migrate")
     action_type.add_argument("--migrate-site", action="store_true",
@@ -588,9 +651,10 @@ def main():
                 # Print project ID to help with troubleshooting
                 print(f"  - {workbook.name} (ID: {workbook.id}, Project ID: {workbook.project_id})")
         
-        elif args.migrate_workbook:
+        elif args.migrate_workbook or args.migrate_workbook_by_name:
+            # For both workbook migration methods, we need a source project
             if not args.source_project_id and not args.source_project_name:
-                logger.error("Either --source-project-id or --source-project-name is required when using --migrate-workbook")
+                logger.error("Either --source-project-id or --source-project-name is required when migrating a workbook")
                 sys.exit(1)
                 
             migrator.connect_to_source()
@@ -613,6 +677,19 @@ def main():
                 
                 source_project_id = matching_projects[0].id
                 logger.info(f"Found source project '{matching_projects[0].name}' with ID: {source_project_id}")
+            
+            # If using --migrate-workbook-by-name, look up the workbook ID
+            workbook_id = args.migrate_workbook
+            if not workbook_id and args.migrate_workbook_by_name:
+                logger.info(f"Looking for workbook with name: {args.migrate_workbook_by_name}")
+                workbook = migrator.find_workbook_by_name(migrator.source_server, 
+                                                         args.migrate_workbook_by_name, 
+                                                         source_project_id)
+                if not workbook:
+                    logger.error(f"Could not find workbook with name: {args.migrate_workbook_by_name}")
+                    sys.exit(1)
+                workbook_id = workbook.id
+                logger.info(f"Found workbook '{workbook.name}' with ID: {workbook_id}")
             
             # If target project specified by name, look it up
             target_project_id = args.target_project_id
@@ -642,7 +719,7 @@ def main():
                 target_project = migrator.ensure_project_exists(args.target_project_name)
                 target_project_id = target_project.id
                 
-            migrator.migrate_workbook(args.migrate_workbook, source_project_id, target_project_id)
+            migrator.migrate_workbook(workbook_id, source_project_id, target_project_id)
         
         elif args.migrate_project:
             migrator.connect_to_source()
