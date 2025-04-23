@@ -301,7 +301,7 @@ def main():
     # Server connection options
     parser.add_argument("--source-server", "-ss", required=True,
                         help="Source Tableau server URL (e.g., https://tableau.example.com)")
-    parser.add_argument("--target-server", "-ts", required=True,
+    parser.add_argument("--target-server", "-ts", 
                         help="Target Tableau server URL (e.g., https://tableau-target.example.com)")
     parser.add_argument("--source-site", "-ssite", default="",
                         help="Source site ID (use empty string for default site)")
@@ -322,7 +322,7 @@ def main():
     
     # Authentication options - Target
     target_auth = parser.add_argument_group("Target Server Authentication")
-    target_auth_method = target_auth.add_mutually_exclusive_group(required=True)
+    target_auth_method = target_auth.add_mutually_exclusive_group(required=False)
     target_auth_method.add_argument("--target-token-name", "-ttn",
                                   help="Name of personal access token for target server")
     target_auth_method.add_argument("--target-username", "-tu",
@@ -357,6 +357,14 @@ def main():
                       default="info", help="Logging verbosity")
     
     args = parser.parse_args()
+    
+    # Check that target server is provided for migration operations
+    if (args.migrate_workbook or args.migrate_project or args.migrate_site) and not args.target_server:
+        parser.error("--target-server is required for migration operations")
+    
+    # Check that target authentication is provided for migration operations
+    if (args.migrate_workbook or args.migrate_project or args.migrate_site) and not (args.target_token_name or args.target_username):
+        parser.error("Target server authentication (--target-token-name or --target-username) is required for migration operations")
     
     # Set up logging
     logging_level = getattr(logging, args.verbosity.upper())
@@ -433,7 +441,14 @@ def main():
             migrator.migrate_site()
     
     finally:
-        migrator.cleanup()
+        # Only clean up source server for listing operations
+        if args.list_sites or args.list_projects or args.list_workbooks:
+            if migrator.source_server:
+                migrator.source_server.auth.sign_out()
+                migrator.logger.info("Signed out of source server")
+        else:
+            # Full cleanup for migration operations
+            migrator.cleanup()
 
 
 if __name__ == "__main__":
