@@ -22,12 +22,13 @@ class TableauMigrator:
                  target_token_name=None, target_token_value=None,
                  source_username=None, source_password=None, 
                  target_username=None, target_password=None,
-                 verify_ssl=True):
+                 verify_ssl=True, api_version=None):
         
         self.source_server_url = source_server
         self.target_server_url = target_server
         self.source_site = source_site
         self.target_site = target_site
+        self.api_version = api_version
         
         # Authentication info
         self.source_token_name = source_token_name
@@ -83,8 +84,17 @@ class TableauMigrator:
         else:
             raise ValueError("No authentication credentials provided for source server")
         
-        self.source_server = TSC.Server(self.source_server_url, use_server_version=True, 
+        # Use auto-detect if no version is specified
+        use_server_version = True if self.api_version is None else False
+        
+        self.source_server = TSC.Server(self.source_server_url, use_server_version=use_server_version, 
                                        http_options={"verify": self.verify_ssl})
+        
+        # Set API version if specified
+        if self.api_version:
+            self.source_server.version = self.api_version
+            self.logger.info(f"Using API version: {self.api_version}")
+        
         self.source_server.auth.sign_in(auth)
         self.logger.info(f"Successfully connected to source server")
         return self.source_server
@@ -107,8 +117,17 @@ class TableauMigrator:
         else:
             raise ValueError("No authentication credentials provided for target server")
         
-        self.target_server = TSC.Server(self.target_server_url, use_server_version=True,
+        # Use auto-detect if no version is specified
+        use_server_version = True if self.api_version is None else False
+        
+        self.target_server = TSC.Server(self.target_server_url, use_server_version=use_server_version,
                                        http_options={"verify": self.verify_ssl})
+        
+        # Set API version if specified
+        if self.api_version:
+            self.target_server.version = self.api_version
+            self.logger.info(f"Using API version: {self.api_version}")
+        
         self.target_server.auth.sign_in(auth)
         self.logger.info(f"Successfully connected to target server")
         return self.target_server
@@ -329,6 +348,8 @@ def main():
                         help="Target site ID (use empty string for default site)")
     parser.add_argument("--no-ssl-verify", action="store_true",
                         help="Disable SSL certificate verification (insecure, but useful for self-signed certs)")
+    parser.add_argument("--api-version", 
+                        help="Specify Tableau Server REST API version (e.g., 3.4, 3.10)")
     
     # Authentication options - Source
     source_auth = parser.add_argument_group("Source Server Authentication")
@@ -412,7 +433,8 @@ def main():
         source_password=args.source_password,
         target_username=args.target_username,
         target_password=args.target_password,
-        verify_ssl=not args.no_ssl_verify
+        verify_ssl=not args.no_ssl_verify,
+        api_version=args.api_version
     )
     
     try:
