@@ -449,6 +449,8 @@ def main():
                       help="Source project name (alternative to --source-project-id)")
     parser.add_argument("--target-project-id", "-tpid",
                       help="Target project ID (optional for --migrate-workbook and --migrate-project)")
+    parser.add_argument("--target-project-name", "-tpname",
+                      help="Target project name (alternative to --target-project-id)")
     parser.add_argument("--verbosity", "-v", choices=["debug", "info", "warning", "error"],
                       default="info", help="Logging verbosity")
     
@@ -525,20 +527,60 @@ def main():
                 print(f"  - {workbook.name} (ID: {workbook.id}, Project ID: {workbook.project_id})")
         
         elif args.migrate_workbook:
-            if not args.source_project_id:
-                logger.error("--source-project-id is required when using --migrate-workbook")
+            if not args.source_project_id and not args.source_project_name:
+                logger.error("Either --source-project-id or --source-project-name is required when using --migrate-workbook")
                 sys.exit(1)
+                
             migrator.connect_to_source()
             migrator.connect_to_target()
             
-            # If target project not specified, use same structure as source
+            # Get source project ID - either directly provided or looked up by name
+            source_project_id = args.source_project_id
+            if not source_project_id and args.source_project_name:
+                # Find project by name
+                all_projects = list(TSC.Pager(migrator.source_server.projects))
+                matching_projects = [p for p in all_projects 
+                                   if p.name.lower() == args.source_project_name.lower()]
+                
+                if not matching_projects:
+                    logger.error(f"No project found with name: {args.source_project_name}")
+                    sys.exit(1)
+                
+                if len(matching_projects) > 1:
+                    logger.warning(f"Multiple projects found with name: {args.source_project_name}. Using the first one.")
+                
+                source_project_id = matching_projects[0].id
+                logger.info(f"Found source project '{matching_projects[0].name}' with ID: {source_project_id}")
+            
+            # If target project specified by name, look it up
             target_project_id = args.target_project_id
-            if not target_project_id:
-                source_project = migrator.source_server.projects.get_by_id(args.source_project_id)
+            if not target_project_id and args.target_project_name:
+                # Find project by name
+                all_target_projects = list(TSC.Pager(migrator.target_server.projects))
+                matching_target_projects = [p for p in all_target_projects 
+                                         if p.name.lower() == args.target_project_name.lower()]
+                
+                if not matching_target_projects:
+                    logger.info(f"No target project found with name: {args.target_project_name}. Will create it.")
+                    # We'll create this project below
+                else:
+                    if len(matching_target_projects) > 1:
+                        logger.warning(f"Multiple target projects found with name: {args.target_project_name}. Using the first one.")
+                    
+                    target_project_id = matching_target_projects[0].id
+                    logger.info(f"Found target project '{matching_target_projects[0].name}' with ID: {target_project_id}")
+            
+            # If target project not specified at all, use same structure as source
+            if not target_project_id and not args.target_project_name:
+                source_project = migrator.source_server.projects.get_by_id(source_project_id)
                 target_project = migrator.ensure_project_exists(source_project.name)
                 target_project_id = target_project.id
+            # If target project specified by name but not found, create it
+            elif not target_project_id and args.target_project_name:
+                target_project = migrator.ensure_project_exists(args.target_project_name)
+                target_project_id = target_project.id
                 
-            migrator.migrate_workbook(args.migrate_workbook, args.source_project_id, target_project_id)
+            migrator.migrate_workbook(args.migrate_workbook, source_project_id, target_project_id)
         
         elif args.migrate_project:
             migrator.connect_to_source()
