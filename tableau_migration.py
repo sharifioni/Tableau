@@ -21,7 +21,8 @@ class TableauMigrator:
                  logger=None, source_token_name=None, source_token_value=None, 
                  target_token_name=None, target_token_value=None,
                  source_username=None, source_password=None, 
-                 target_username=None, target_password=None):
+                 target_username=None, target_password=None,
+                 verify_ssl=True):
         
         self.source_server_url = source_server
         self.target_server_url = target_server
@@ -37,6 +38,13 @@ class TableauMigrator:
         self.source_password = source_password
         self.target_username = target_username
         self.target_password = target_password
+        
+        # SSL verification
+        self.verify_ssl = verify_ssl
+        if not verify_ssl:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logger.warning("SSL certificate verification is disabled. This is insecure.")
         
         # Server connections
         self.source_server = None
@@ -75,7 +83,8 @@ class TableauMigrator:
         else:
             raise ValueError("No authentication credentials provided for source server")
         
-        self.source_server = TSC.Server(self.source_server_url, use_server_version=True)
+        self.source_server = TSC.Server(self.source_server_url, use_server_version=True, 
+                                       http_options={"verify": self.verify_ssl})
         self.source_server.auth.sign_in(auth)
         self.logger.info(f"Successfully connected to source server")
         return self.source_server
@@ -98,7 +107,8 @@ class TableauMigrator:
         else:
             raise ValueError("No authentication credentials provided for target server")
         
-        self.target_server = TSC.Server(self.target_server_url, use_server_version=True)
+        self.target_server = TSC.Server(self.target_server_url, use_server_version=True,
+                                       http_options={"verify": self.verify_ssl})
         self.target_server.auth.sign_in(auth)
         self.logger.info(f"Successfully connected to target server")
         return self.target_server
@@ -170,7 +180,11 @@ class TableauMigrator:
         return new_project
     
     def migrate_workbook(self, workbook_id, source_project, target_project_id):
-        """Migrate a single workbook from source to target"""
+        """Migrate a single workbook from source to target
+        
+        This is a copy operation - workbooks are copied to the target server
+        but remain intact on the source server.
+        """
         if not self.source_server:
             self.connect_to_source()
         if not self.target_server:
@@ -196,7 +210,10 @@ class TableauMigrator:
         self.logger.info(f"Successfully migrated workbook {workbook.name}")
     
     def migrate_project(self, source_project_id, target_project_id=None):
-        """Migrate all workbooks from a source project to a target project"""
+        """Migrate all workbooks from a source project to a target project
+        
+        This is a copy operation - all content remains intact on the source server.
+        """
         if not self.source_server:
             self.connect_to_source()
         if not self.target_server:
@@ -220,7 +237,10 @@ class TableauMigrator:
         self.logger.info(f"Successfully migrated {len(workbooks)} workbooks from project {source_project.name}")
     
     def migrate_site(self, source_site_id=None, target_site_id=None):
-        """Migrate all projects and workbooks from a source site to a target site"""
+        """Migrate all projects and workbooks from a source site to a target site
+        
+        This is a copy operation - all content remains intact on the source server.
+        """
         # Use current site if none specified
         source_site_id = source_site_id or self.source_site
         target_site_id = target_site_id or self.target_site
@@ -307,6 +327,8 @@ def main():
                         help="Source site ID (use empty string for default site)")
     parser.add_argument("--target-site", "-tsite", default="",
                         help="Target site ID (use empty string for default site)")
+    parser.add_argument("--no-ssl-verify", action="store_true",
+                        help="Disable SSL certificate verification (insecure, but useful for self-signed certs)")
     
     # Authentication options - Source
     source_auth = parser.add_argument_group("Source Server Authentication")
@@ -389,7 +411,8 @@ def main():
         source_username=args.source_username,
         source_password=args.source_password,
         target_username=args.target_username,
-        target_password=args.target_password
+        target_password=args.target_password,
+        verify_ssl=not args.no_ssl_verify
     )
     
     try:
@@ -445,7 +468,7 @@ def main():
         if args.list_sites or args.list_projects or args.list_workbooks:
             if migrator.source_server:
                 migrator.source_server.auth.sign_out()
-                migrator.logger.info("Signed out of source server")
+                migrator.logger.info("Signed out of source server") 
         else:
             # Full cleanup for migration operations
             migrator.cleanup()
