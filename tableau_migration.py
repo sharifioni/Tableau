@@ -313,18 +313,47 @@ class TableauMigrator:
                     # Create a simpler path with a basic file name
                     workbook_file = os.path.join(self.temp_dir, "workbook.twbx")
                     
-                    # Try a different API approach
-                    download_path = self.source_server.workbooks.download(workbook_id, filepath=self.temp_dir, no_extract=not self.include_extract)
+                    # Try a different API approach - note: no_extract was incorrect
+                    # The correct parameter is include_extract
+                    self.logger.info(f"Downloading to directory {self.temp_dir} with include_extract={self.include_extract}")
+                    try:
+                        download_path = self.source_server.workbooks.download(workbook_id, 
+                                                                            filepath=self.temp_dir, 
+                                                                            include_extract=self.include_extract)
+                        self.logger.info(f"Download path returned: {download_path}")
+                    except TypeError:
+                        # Older versions of TSC might not support the include_extract parameter
+                        self.logger.info("Trying download without extra parameters")
+                        download_path = self.source_server.workbooks.download(workbook_id, 
+                                                                            filepath=self.temp_dir)
                     
-                    if download_path and os.path.exists(download_path):
+                    # Handle the case where the path is returned as a string
+                    if isinstance(download_path, str) and os.path.exists(download_path):
                         workbook_file = download_path
                         file_size = os.path.getsize(workbook_file)
-                        self.logger.info(f"Alternative download succeeded. File: {workbook_file}, size: {file_size} bytes")
+                        self.logger.info(f"Alternative download succeeded with path return. File: {workbook_file}, size: {file_size} bytes")
                         downloaded = True
+                    # Or the case where the download method returns None but creates the file
+                    elif download_path is None:
+                        # Look for any new files in the temp dir that might be our workbook
+                        possible_files = [f for f in os.listdir(self.temp_dir) 
+                                        if f.endswith('.twb') or f.endswith('.twbx')]
+                        if possible_files:
+                            newest_file = max(possible_files, key=lambda f: os.path.getctime(os.path.join(self.temp_dir, f)))
+                            workbook_file = os.path.join(self.temp_dir, newest_file)
+                            if os.path.exists(workbook_file):
+                                file_size = os.path.getsize(workbook_file)
+                                self.logger.info(f"Found potential workbook file: {workbook_file}, size: {file_size} bytes")
+                                downloaded = True
+                        else:
+                            error_messages.append("No workbook files found in download directory")
                     else:
                         error_messages.append("Alternative download approach returned a path, but file does not exist")
                 except Exception as alt_err:
                     error_messages.append(f"Alternative download approach failed: {str(alt_err)}")
+                    self.logger.error(f"Exception details: {alt_err.__class__.__name__}: {str(alt_err)}")
+                    import traceback
+                    self.logger.error(f"Traceback: {traceback.format_exc()}")
             
             # If still not downloaded, raise error with all the messages
             if not downloaded:
