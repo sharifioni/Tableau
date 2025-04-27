@@ -31,7 +31,8 @@ class TableauMigrator:
                  target_token_name=None, target_token_value=None,
                  source_username=None, source_password=None, 
                  target_username=None, target_password=None,
-                 verify_ssl=True, api_version=None, download_dir=None, include_extract=False):
+                 verify_ssl=True, api_version=None, download_dir=None, 
+                 include_extract=False, skip_data_sources=False):
         
         self.source_server_url = source_server
         self.target_server_url = target_server
@@ -39,6 +40,7 @@ class TableauMigrator:
         self.target_site = target_site
         self.api_version = api_version
         self.include_extract = include_extract
+        self.skip_data_sources = skip_data_sources
         
         # Authentication info
         self.source_token_name = source_token_name
@@ -380,7 +382,20 @@ class TableauMigrator:
                     self.logger.info("File is readable")
                 
                 self.logger.info(f"Publishing with mode: {publish_mode}")
-                self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                
+                # Set publish options based on skip_data_sources
+                if self.skip_data_sources:
+                    self.logger.info("Publishing without data source connections (--skip-data-sources enabled)")
+                    # Use connections_enabled=False to skip data source connections
+                    connection_options = {
+                        "connections_enabled": False
+                    }
+                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode, 
+                                                       connection_credentials=None,
+                                                       connections_enabled=False)
+                else:
+                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                    
                 self.logger.info(f"Successfully migrated workbook {workbook.name}")
             except Exception as upload_error:
                 self.logger.error(f"Error publishing workbook: {str(upload_error)}")
@@ -393,7 +408,15 @@ class TableauMigrator:
                     self.logger.info("Trying alternative publish mode...")
                     publish_mode = TSC.Server.PublishMode.CreateNew
                     self.logger.info(f"Publishing with mode: {publish_mode}")
-                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                    
+                    # Set publish options based on skip_data_sources
+                    if self.skip_data_sources:
+                        self.logger.info("Publishing without data source connections (--skip-data-sources enabled)")
+                        self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode, 
+                                                           connections_enabled=False)
+                    else:
+                        self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                        
                     self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
                 except Exception as retry_error:
                     self.logger.error(f"Alternative publish mode also failed: {str(retry_error)}")
@@ -619,6 +642,8 @@ def main():
                         help="Specify a custom directory for workbook downloads (optional)")
     parser.add_argument("--include-extract", action="store_true",
                         help="Include data extract when downloading workbooks (may make file larger)")
+    parser.add_argument("--skip-data-sources", action="store_true",
+                        help="Skip data source connections when publishing (helps with permission issues)")
     parser.add_argument("--env-file", default=".env",
                         help="Path to .env file for credentials (default: .env in current directory)")
     
@@ -757,7 +782,8 @@ def main():
         verify_ssl=not args.no_ssl_verify,
         api_version=api_version,
         download_dir=args.download_dir,
-        include_extract=args.include_extract
+        include_extract=args.include_extract,
+        skip_data_sources=args.skip_data_sources
     )
     
     try:
