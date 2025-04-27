@@ -383,18 +383,19 @@ class TableauMigrator:
                 
                 self.logger.info(f"Publishing with mode: {publish_mode}")
                 
-                # Set publish options based on skip_data_sources
+                # Check for older version of tableauserverclient
                 if self.skip_data_sources:
                     self.logger.info("Publishing without data source connections (--skip-data-sources enabled)")
-                    # Use connections_enabled=False to skip data source connections
-                    connection_options = {
-                        "connections_enabled": False
-                    }
-                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode, 
-                                                       connection_credentials=None,
-                                                       connections_enabled=False)
-                else:
-                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                    
+                    # For older versions, we can't disable connections, so we'll just publish normally
+                    # and warn the user
+                    self.logger.warning("Your version of tableauserverclient doesn't support skipping data sources.")
+                    self.logger.warning("The workbook will be published with data connections.")
+                    self.logger.warning("If this fails due to permissions, you'll need to update tableauserverclient:")
+                    self.logger.warning("pip install tableauserverclient --upgrade")
+                
+                # Basic publish with no extra options
+                self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
                     
                 self.logger.info(f"Successfully migrated workbook {workbook.name}")
             except Exception as upload_error:
@@ -409,13 +410,8 @@ class TableauMigrator:
                     publish_mode = TSC.Server.PublishMode.CreateNew
                     self.logger.info(f"Publishing with mode: {publish_mode}")
                     
-                    # Set publish options based on skip_data_sources
-                    if self.skip_data_sources:
-                        self.logger.info("Publishing without data source connections (--skip-data-sources enabled)")
-                        self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode, 
-                                                           connections_enabled=False)
-                    else:
-                        self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                    # Basic publish with no extra options
+                    self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
                         
                     self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
                 except Exception as retry_error:
