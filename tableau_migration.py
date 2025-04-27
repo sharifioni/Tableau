@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Tableau Server Migration Tool
 
@@ -14,6 +15,7 @@ import tempfile
 import tableauserverclient as TSC
 from pathlib import Path
 import time
+import re
 
 
 class TableauMigrator:
@@ -22,13 +24,14 @@ class TableauMigrator:
                  target_token_name=None, target_token_value=None,
                  source_username=None, source_password=None, 
                  target_username=None, target_password=None,
-                 verify_ssl=True, api_version=None):
+                 verify_ssl=True, api_version=None, download_dir=None, include_extract=False):
         
         self.source_server_url = source_server
         self.target_server_url = target_server
         self.source_site = source_site
         self.target_site = target_site
         self.api_version = api_version
+        self.include_extract = include_extract
         
         # Authentication info
         self.source_token_name = source_token_name
@@ -62,9 +65,19 @@ class TableauMigrator:
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
         
-        # Temp directory for downloaded workbooks
-        self.temp_dir = tempfile.mkdtemp()
-        self.logger.info(f"Created temporary directory: {self.temp_dir}")
+        # Set up temp directory
+        if download_dir:
+            self.temp_dir = download_dir
+            if not os.path.exists(self.temp_dir):
+                os.makedirs(self.temp_dir)
+                self.logger.info(f"Created download directory: {self.temp_dir}")
+            else:
+                self.logger.info(f"Using existing download directory: {self.temp_dir}")
+            self.should_delete_temp_dir = False
+        else:
+            self.temp_dir = tempfile.mkdtemp()
+            self.logger.info(f"Created temporary directory: {self.temp_dir}")
+            self.should_delete_temp_dir = True
 
     def connect_to_source(self):
         """Connect to the source Tableau server"""
@@ -250,78 +263,117 @@ class TableauMigrator:
                 
                 raise ValueError(f"Workbook with ID '{workbook_id}' not found. Please verify the ID is correct.")
             
-            # Download the workbook
-            workbook_file = os.path.join(self.temp_dir, f"workbook_{workbook_id}.twbx")
-            self.logger.info(f"Downloading workbook {workbook_id} to {workbook_file}")
+            # Create safe filenames without characters that might cause issues
+            safe_filename = re.sub(r'[^\w\-_.]', '_', f"workbook_{workbook_id}")
             
-            try:
-                self.source_server.workbooks.download(workbook_id, workbook_file)
-                
-                # Verify file was downloaded and exists
-                if not os.path.exists(workbook_file):
-                    self.logger.error(f"Download failed: File {workbook_file} does not exist")
-                    raise FileNotFoundError(f"Failed to download workbook to {workbook_file}")
+            # Try two different file extensions
+            file_extensions = ['.twbx', '.twb']
+            downloaded = False
+            workbook_file = None
+            error_messages = []
+            
+            for ext in file_extensions:
+                if downloaded:
+                    break
                     
-                file_size = os.path.getsize(workbook_file)
-                self.logger.info(f"Downloaded workbook file size: {file_size} bytes")
-                
-                if file_size == 0:
-                    self.logger.error("Downloaded file is empty")
-                    raise ValueError("Downloaded workbook file is empty")
-                
-                # Small delay to ensure file is fully flushed to disk
-                time.sleep(1)
-                
-                # Create a new workbook item with the target project id
-                new_workbook = TSC.WorkbookItem(project_id=target_project_id, name=workbook.name)
-                
-                # Upload to target
-                self.logger.info(f"Uploading workbook {workbook.name} to target project {target_project_id}")
+                workbook_file = os.path.join(self.temp_dir, f"{safe_filename}{ext}")
+                self.logger.info(f"Attempting to download workbook {workbook_id} to {workbook_file}")
                 
                 try:
-                    # Try with CreateNew instead of Overwrite if there are issues
-                    publish_mode = TSC.Server.PublishMode.Overwrite
+                    # Specify include_extract based on user option
+                    self.source_server.workbooks.download(workbook_id, workbook_file, include_extract=self.include_extract)
                     
-                    # Make sure the file is accessible and readable
-                    with open(workbook_file, 'rb') as file_check:
-                        file_check.read(1024)  # Read a small chunk to verify file is accessible
-                        self.logger.info("File is readable")
+                    # Verify file was downloaded and exists
+                    if os.path.exists(workbook_file):
+                        file_size = os.path.getsize(workbook_file)
+                        self.logger.info(f"Downloaded workbook file size: {file_size} bytes")
+                        
+                        if file_size > 0:
+                            downloaded = True
+                            self.logger.info(f"Successfully downloaded workbook to {workbook_file}")
+                        else:
+                            os.remove(workbook_file)
+                            error_messages.append(f"Downloaded file is empty (extension: {ext})")
+                    else:
+                        error_messages.append(f"File does not exist after download (extension: {ext})")
+                except Exception as download_err:
+                    error_messages.append(f"Error during download with extension {ext}: {str(download_err)}")
+            
+            # If no successful download, try a fallback approach
+            if not downloaded:
+                try:
+                    self.logger.info("Trying alternative download approach...")
+                    # Create a simpler path with a basic file name
+                    workbook_file = os.path.join(self.temp_dir, "workbook.twbx")
                     
+                    # Try a different API approach
+                    download_path = self.source_server.workbooks.download(workbook_id, filepath=self.temp_dir, no_extract=not self.include_extract)
+                    
+                    if download_path and os.path.exists(download_path):
+                        workbook_file = download_path
+                        file_size = os.path.getsize(workbook_file)
+                        self.logger.info(f"Alternative download succeeded. File: {workbook_file}, size: {file_size} bytes")
+                        downloaded = True
+                    else:
+                        error_messages.append("Alternative download approach returned a path, but file does not exist")
+                except Exception as alt_err:
+                    error_messages.append(f"Alternative download approach failed: {str(alt_err)}")
+            
+            # If still not downloaded, raise error with all the messages
+            if not downloaded:
+                error_detail = "\n".join(error_messages)
+                self.logger.error(f"All download attempts failed:\n{error_detail}")
+                raise FileNotFoundError(f"Failed to download workbook {workbook_id} after multiple attempts")
+            
+            # Small delay to ensure file is fully flushed to disk
+            time.sleep(1)
+            
+            # Create a new workbook item with the target project id
+            new_workbook = TSC.WorkbookItem(project_id=target_project_id, name=workbook.name)
+            
+            # Upload to target
+            self.logger.info(f"Uploading workbook {workbook.name} to target project {target_project_id}")
+            
+            try:
+                # Try with CreateNew instead of Overwrite if there are issues
+                publish_mode = TSC.Server.PublishMode.Overwrite
+                
+                # Make sure the file is accessible and readable
+                with open(workbook_file, 'rb') as file_check:
+                    file_check.read(1024)  # Read a small chunk to verify file is accessible
+                    self.logger.info("File is readable")
+                
+                self.logger.info(f"Publishing with mode: {publish_mode}")
+                self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
+                self.logger.info(f"Successfully migrated workbook {workbook.name}")
+            except Exception as upload_error:
+                self.logger.error(f"Error publishing workbook: {str(upload_error)}")
+                self.logger.error(f"Workbook file exists: {os.path.exists(workbook_file)}")
+                self.logger.error(f"Workbook file size: {os.path.getsize(workbook_file) if os.path.exists(workbook_file) else 'N/A'}")
+                self.logger.error(f"Target project exists: {target_project_id}")
+                
+                # Try with different publish mode
+                try:
+                    self.logger.info("Trying alternative publish mode...")
+                    publish_mode = TSC.Server.PublishMode.CreateNew
                     self.logger.info(f"Publishing with mode: {publish_mode}")
                     self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
-                    self.logger.info(f"Successfully migrated workbook {workbook.name}")
-                except Exception as upload_error:
-                    self.logger.error(f"Error publishing workbook: {str(upload_error)}")
-                    self.logger.error(f"Workbook file exists: {os.path.exists(workbook_file)}")
-                    self.logger.error(f"Workbook file size: {os.path.getsize(workbook_file) if os.path.exists(workbook_file) else 'N/A'}")
-                    self.logger.error(f"Target project exists: {target_project_id}")
+                    self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
+                except Exception as retry_error:
+                    self.logger.error(f"Alternative publish mode also failed: {str(retry_error)}")
+                    raise
                     
-                    # Try with different publish mode
-                    try:
-                        self.logger.info("Trying alternative publish mode...")
-                        publish_mode = TSC.Server.PublishMode.CreateNew
-                        self.logger.info(f"Publishing with mode: {publish_mode}")
-                        self.target_server.workbooks.publish(new_workbook, workbook_file, publish_mode)
-                        self.logger.info(f"Successfully migrated workbook {workbook.name} with alternative mode")
-                    except Exception as retry_error:
-                        self.logger.error(f"Alternative publish mode also failed: {str(retry_error)}")
-                        raise
-                    
-            except Exception as e:
-                self.logger.error(f"Error in workbook download/upload process: {str(e)}")
-                raise
-            finally:
-                # Clean up the temp file
-                if os.path.exists(workbook_file):
-                    try:
-                        os.remove(workbook_file)
-                        self.logger.info(f"Removed temporary file: {workbook_file}")
-                    except Exception as cleanup_error:
-                        self.logger.warning(f"Failed to remove temporary file: {str(cleanup_error)}")
-        
         except Exception as e:
             self.logger.error(f"Migration failed: {str(e)}")
             raise
+        finally:
+            # Clean up the temp file only if we're not keeping the download directory
+            if workbook_file and os.path.exists(workbook_file) and self.should_delete_temp_dir:
+                try:
+                    os.remove(workbook_file)
+                    self.logger.info(f"Removed temporary file: {workbook_file}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Failed to remove temporary file: {str(cleanup_error)}")
     
     def migrate_project(self, source_project_id, target_project_id=None):
         """Migrate all workbooks from a source project to a target project
@@ -414,13 +466,16 @@ class TableauMigrator:
     def cleanup(self):
         """Clean up temporary files and sign out of servers"""
         # Clean up temp directory
-        import shutil
-        try:
-            if os.path.exists(self.temp_dir):
-                shutil.rmtree(self.temp_dir)
-                self.logger.info(f"Removed temporary directory: {self.temp_dir}")
-        except Exception as e:
-            self.logger.warning(f"Error cleaning up temporary directory: {str(e)}")
+        if self.should_delete_temp_dir:
+            import shutil
+            try:
+                if os.path.exists(self.temp_dir):
+                    shutil.rmtree(self.temp_dir)
+                    self.logger.info(f"Removed temporary directory: {self.temp_dir}")
+            except Exception as e:
+                self.logger.warning(f"Error cleaning up temporary directory: {str(e)}")
+        else:
+            self.logger.info(f"Keeping download directory: {self.temp_dir}")
         
         # Sign out of servers
         try:
@@ -524,6 +579,10 @@ def main():
                         help="Disable SSL certificate verification (insecure, but useful for self-signed certs)")
     parser.add_argument("--api-version", 
                         help="Specify Tableau Server REST API version (e.g., 3.4, 3.10)")
+    parser.add_argument("--download-dir",
+                        help="Specify a custom directory for workbook downloads (optional)")
+    parser.add_argument("--include-extract", action="store_true",
+                        help="Include data extract when downloading workbooks (may make file larger)")
     
     # Authentication options - Source
     source_auth = parser.add_argument_group("Source Server Authentication")
@@ -614,7 +673,9 @@ def main():
         target_username=args.target_username,
         target_password=args.target_password,
         verify_ssl=not args.no_ssl_verify,
-        api_version=args.api_version
+        api_version=args.api_version,
+        download_dir=args.download_dir,
+        include_extract=args.include_extract
     )
     
     try:
