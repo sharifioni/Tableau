@@ -17,6 +17,13 @@ from pathlib import Path
 import time
 import re
 
+# Add dotenv support for reading environment variables
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+
 
 class TableauMigrator:
     def __init__(self, source_server, target_server, source_site, target_site, 
@@ -567,7 +574,7 @@ def main():
     parser = argparse.ArgumentParser(description="Migrate workbooks between Tableau servers")
     
     # Server connection options
-    parser.add_argument("--source-server", "-ss", required=True,
+    parser.add_argument("--source-server", "-ss", 
                         help="Source Tableau server URL (e.g., https://tableau.example.com)")
     parser.add_argument("--target-server", "-ts", 
                         help="Target Tableau server URL (e.g., https://tableau-target.example.com)")
@@ -583,10 +590,12 @@ def main():
                         help="Specify a custom directory for workbook downloads (optional)")
     parser.add_argument("--include-extract", action="store_true",
                         help="Include data extract when downloading workbooks (may make file larger)")
+    parser.add_argument("--env-file", default=".env",
+                        help="Path to .env file for credentials (default: .env in current directory)")
     
     # Authentication options - Source
     source_auth = parser.add_argument_group("Source Server Authentication")
-    source_auth_method = source_auth.add_mutually_exclusive_group(required=True)
+    source_auth_method = source_auth.add_mutually_exclusive_group(required=False)
     source_auth_method.add_argument("--source-token-name", "-stn",
                                   help="Name of personal access token for source server")
     source_auth_method.add_argument("--source-username", "-su",
@@ -640,13 +649,57 @@ def main():
     
     args = parser.parse_args()
     
-    # Check that target server is provided for migration operations
-    if (args.migrate_workbook or args.migrate_project or args.migrate_site) and not args.target_server:
-        parser.error("--target-server is required for migration operations")
+    # Load environment variables from .env file if available
+    if DOTENV_AVAILABLE:
+        env_file = args.env_file
+        if os.path.exists(env_file):
+            load_dotenv(env_file)
+            print(f"Loaded environment variables from {env_file}")
+        else:
+            print(f"Warning: Environment file {env_file} not found")
+    else:
+        print("Warning: python-dotenv not installed. Cannot load .env file.")
+        print("Install with: pip install python-dotenv")
     
-    # Check that target authentication is provided for migration operations
-    if (args.migrate_workbook or args.migrate_project or args.migrate_site) and not (args.target_token_name or args.target_username):
-        parser.error("Target server authentication (--target-token-name or --target-username) is required for migration operations")
+    # Use arguments if provided, otherwise try environment variables
+    source_server = args.source_server or os.environ.get("TABLEAU_SOURCE_SERVER")
+    target_server = args.target_server or os.environ.get("TABLEAU_TARGET_SERVER")
+    source_site = args.source_site or os.environ.get("TABLEAU_SOURCE_SITE", "")
+    target_site = args.target_site or os.environ.get("TABLEAU_TARGET_SITE", "")
+    
+    # Source auth
+    source_token_name = args.source_token_name or os.environ.get("TABLEAU_SOURCE_TOKEN_NAME")
+    source_token_value = args.source_token_value or os.environ.get("TABLEAU_SOURCE_TOKEN_VALUE")
+    source_username = args.source_username or os.environ.get("TABLEAU_SOURCE_USERNAME")
+    source_password = args.source_password or os.environ.get("TABLEAU_SOURCE_PASSWORD")
+    
+    # Target auth
+    target_token_name = args.target_token_name or os.environ.get("TABLEAU_TARGET_TOKEN_NAME")
+    target_token_value = args.target_token_value or os.environ.get("TABLEAU_TARGET_TOKEN_VALUE")
+    target_username = args.target_username or os.environ.get("TABLEAU_TARGET_USERNAME")
+    target_password = args.target_password or os.environ.get("TABLEAU_TARGET_PASSWORD")
+    
+    # API Version
+    api_version = args.api_version or os.environ.get("TABLEAU_API_VERSION")
+    
+    # Validate required parameters
+    if not source_server:
+        parser.error("Source server must be provided via --source-server or TABLEAU_SOURCE_SERVER environment variable")
+    
+    # Source auth validation
+    if not (source_token_name or source_username):
+        parser.error("Source authentication must be provided via command line arguments or environment variables")
+    
+    # Target auth validation for migration operations
+    if (args.migrate_workbook or args.migrate_workbook_by_name or args.migrate_project or args.migrate_site):
+        if not target_server:
+            parser.error("Target server must be provided for migration operations")
+        if not (target_token_name or target_username):
+            parser.error("Target authentication must be provided for migration operations")
+    
+    # Check that target server is provided for migration operations
+    if (args.migrate_workbook or args.migrate_workbook_by_name or args.migrate_project or args.migrate_site) and not target_server:
+        parser.error("--target-server is required for migration operations")
     
     # Set up logging
     logging_level = getattr(logging, args.verbosity.upper())
@@ -659,21 +712,21 @@ def main():
     
     # Create migrator
     migrator = TableauMigrator(
-        source_server=args.source_server,
-        target_server=args.target_server,
-        source_site=args.source_site,
-        target_site=args.target_site,
+        source_server=source_server,
+        target_server=target_server,
+        source_site=source_site,
+        target_site=target_site,
         logger=logger,
-        source_token_name=args.source_token_name,
-        source_token_value=args.source_token_value,
-        target_token_name=args.target_token_name,
-        target_token_value=args.target_token_value,
-        source_username=args.source_username,
-        source_password=args.source_password,
-        target_username=args.target_username,
-        target_password=args.target_password,
+        source_token_name=source_token_name,
+        source_token_value=source_token_value,
+        target_token_name=target_token_name,
+        target_token_value=target_token_value,
+        source_username=source_username,
+        source_password=source_password,
+        target_username=target_username,
+        target_password=target_password,
         verify_ssl=not args.no_ssl_verify,
-        api_version=args.api_version,
+        api_version=api_version,
         download_dir=args.download_dir,
         include_extract=args.include_extract
     )
@@ -802,4 +855,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()  
